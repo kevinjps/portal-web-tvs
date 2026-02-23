@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ITF Vidros Rio — Painel de Mídia</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/admin.css"/>
+</head>
+<body>
+<div class="layout">
+
+  <header>
+    <div class="header-logo">
+      <img src="/static/imagens/logotipo_itf.png" alt="ITF Logo" />
+      <div class="header-brand">
+        <span class="name">ITF Vidros Rio</span>
+        <span class="sub">Improvement Task Force</span>
+      </div>
+    </div>
+    <div class="header-divider"></div>
+    <span class="header-app">Painel de Mídia</span>
+    <div class="header-right">
+      <div class="tv-status" id="tvStatus">
+        <div class="dot"></div>
+        <span id="tvStatusText">TV desconectada</span>
+      </div>
+      <a href="/tv" target="_blank" class="tv-link">📺 Abrir TV</a>
+    </div>
+  </header>
+
+  <aside>
+    <div class="section-label">Tocando agora</div>
+    <div class="now-playing-card">
+      <div class="live-pill"><div class="live-dot"></div> Ao vivo</div>
+      <div id="nowPlayingTitle" class="empty">Nenhum vídeo ativo</div>
+      <div class="controls">
+        <button class="ctrl-btn" id="btnPause" title="Pausar / Retomar" disabled>⏸</button>
+        <button class="ctrl-btn" id="btnStop"  title="Parar" disabled>⏹</button>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <div>
+      <div class="upload-zone" id="uploadZone">
+        <span class="upload-icon">🎬</span>
+        <h3>Envie seus vídeos</h3>
+        <p>Arraste e solte aqui, ou clique para selecionar</p>
+        <p style="margin-top:3px;">MP4 · WebM · MOV · AVI</p>
+        <button class="upload-btn" id="uploadBtn" type="button">＋ Escolher arquivo</button>
+        <input type="file" id="fileInput" accept="video/*" multiple style="display:none" />
+        <div class="upload-progress" id="uploadProgress">
+          <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
+          <div class="progress-text" id="progressText">Enviando...</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-header">
+        <h2>Biblioteca de vídeos</h2>
+        <span class="badge" id="videoCount">0 vídeos</span>
+      </div>
+      <div class="video-grid" id="videoGrid">
+        <div class="empty-state"><span>🎥</span><p>Nenhum vídeo ainda. Faça o upload acima!</p></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast">
+  <span id="toastIcon">✅</span>
+  <span id="toastMsg"></span>
+</div>
+
+<script>
+  let videos = [], currentVideo = null, isPaused = false, ws;
+
+  function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onopen  = () => {};  // status real vem via tv_count
+    ws.onclose = () => { setTVStatus(0); setTimeout(connectWS, 3000); };
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'state') { syncState(msg.state); setTVStatus(msg.tv_count ?? 0); }
+      if (msg.type === 'tv_count') setTVStatus(msg.count);
+    };
+  }
+
+  function setTVStatus(count) {
+    const el = document.getElementById('tvStatus');
+    const txt = document.getElementById('tvStatusText');
+    if (count > 0) {
+      el.className = 'tv-status connected';
+      txt.textContent = count === 1 ? 'TV conectada' : `${count} TVs conectadas`;
+    } else {
+      el.className = 'tv-status';
+      txt.textContent = 'TV desconectada';
+    }
+  }
+
+  function syncState(s) {
+    if (s.video_url) { currentVideo = s.video_url; updateNowPlaying(s.video_name); }
+  }
+
+  async function api(method, url, body) {
+    const opts = { method, headers: {} };
+    if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    return (await fetch(url, opts)).json();
+  }
+
+  async function loadVideos() {
+    videos = await api('GET', '/api/videos');
+    renderVideos();
+  }
+
+  function renderVideos() {
+    const grid = document.getElementById('videoGrid');
+    document.getElementById('videoCount').textContent = `${videos.length} vídeo${videos.length !== 1 ? 's' : ''}`;
+    if (!videos.length) {
+      grid.innerHTML = `<div class="empty-state"><span>🎥</span><p>Nenhum vídeo ainda. Faça o upload acima!</p></div>`;
+      return;
+    }
+    grid.innerHTML = videos.map(v => {
+      const isActive = currentVideo && currentVideo.includes(v.filename);
+      const name = v.original_name.replace(/\.[^.]+$/, '');
+      return `
+        <div class="video-card ${isActive ? 'active' : ''}">
+          <div class="video-thumb">
+            <video src="${v.url}" preload="metadata" muted></video>
+            <div class="play-overlay">▶</div>
+            ${isActive ? '<div class="active-badge">● Ao vivo</div>' : ''}
+          </div>
+          <div class="video-info">
+            <div class="name" title="${v.original_name}">${name}</div>
+            <div class="video-meta">
+              <span class="size">${formatSize(v.size)}</span>
+              <div class="card-actions">
+                <button class="card-btn danger" onclick="deleteVideo('${v.filename}')">🗑</button>
+                <button class="card-btn primary" onclick="playVideo('${v.url}', '${name}')">
+                  ${isActive ? '↺ Reiniciar' : '▶ Exibir na TV'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  async function playVideo(url, name) {
+    await api('POST', '/api/control', { action: 'play', video_url: url, video_name: name });
+    currentVideo = url; isPaused = false;
+    updateNowPlaying(name); renderVideos();
+    toast('success', `▶ Exibindo "${name}" na TV`);
+  }
+
+  async function deleteVideo(filename) {
+    if (!confirm('Deletar este vídeo?')) return;
+    await api('DELETE', `/api/videos/${filename}`);
+    await loadVideos();
+    toast('success', 'Vídeo removido');
+  }
+
+  document.getElementById('btnPause').addEventListener('click', async () => {
+    if (!currentVideo) return;
+    if (isPaused) {
+      await api('POST', '/api/control', { action: 'resume' });
+      document.getElementById('btnPause').textContent = '⏸'; isPaused = false;
+    } else {
+      await api('POST', '/api/control', { action: 'pause' });
+      document.getElementById('btnPause').textContent = '▶'; isPaused = true;
+    }
+  });
+
+  document.getElementById('btnStop').addEventListener('click', async () => {
+    await api('POST', '/api/control', { action: 'stop' });
+    currentVideo = null; isPaused = false; updateNowPlaying(null); renderVideos();
+  });
+
+  function updateNowPlaying(name) {
+    const el = document.getElementById('nowPlayingTitle');
+    const p = document.getElementById('btnPause');
+    const s = document.getElementById('btnStop');
+    if (name) { el.className = 'title'; el.textContent = name; p.disabled = false; s.disabled = false; }
+    else       { el.className = 'empty'; el.textContent = 'Nenhum vídeo ativo'; p.disabled = true; s.disabled = true; }
+  }
+
+  const uploadZone = document.getElementById('uploadZone');
+  const uploadBtn  = document.getElementById('uploadBtn');
+  const fileInput  = document.getElementById('fileInput');
+
+  uploadBtn.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+  uploadZone.addEventListener('click', () => fileInput.click());
+  uploadZone.addEventListener('dragover',  e => { e.preventDefault(); uploadZone.classList.add('dragging'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragging'));
+  uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('dragging'); uploadFiles(e.dataTransfer.files); });
+  fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadFiles(fileInput.files); });
+
+  async function uploadFiles(files) {
+    for (const f of files) await uploadFile(f);
+    await loadVideos();
+  }
+
+  function uploadFile(file) {
+    return new Promise(resolve => {
+      const fd = new FormData();
+      fd.append('video', file);
+      const xhr = new XMLHttpRequest();
+      const progress = document.getElementById('uploadProgress');
+      const fill = document.getElementById('progressFill');
+      const text = document.getElementById('progressText');
+      progress.classList.add('active');
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) { const p = Math.round(e.loaded/e.total*100); fill.style.width=p+'%'; text.textContent=`Enviando ${file.name} — ${p}%`; }
+      };
+      xhr.onload  = () => { progress.classList.remove('active'); fill.style.width='0%'; toast('success', `"${file.name}" enviado!`); resolve(); };
+      xhr.onerror = () => { progress.classList.remove('active'); toast('error', 'Erro ao enviar'); resolve(); };
+      xhr.open('POST', '/api/upload');
+      xhr.send(fd);
+    });
+  }
+
+  function formatSize(b) { return b < 1048576 ? (b/1024).toFixed(0)+' KB' : (b/1048576).toFixed(1)+' MB'; }
+
+  let toastTimer;
+  function toast(type, msg) {
+    const el = document.getElementById('toast');
+    document.getElementById('toastIcon').textContent = type === 'success' ? '✅' : '❌';
+    document.getElementById('toastMsg').textContent = msg;
+    el.className = `toast ${type} show`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  connectWS();
+  loadVideos();
+</script>
+</body>
+</html>

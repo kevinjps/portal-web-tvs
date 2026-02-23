@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Signage — TV</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Helvetica Neue', Arial, sans-serif; cursor: none; }
+
+    #player { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    video { width: 100%; height: 100%; object-fit: contain; background: #000; display: none; }
+
+    .idle { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0a0a0f; color: #f0eff5; transition: opacity 0.8s; }
+    .idle.hidden { opacity: 0; pointer-events: none; }
+    .idle-bg { position: absolute; inset: 0; background: radial-gradient(ellipse 60% 50% at 30% 40%, rgba(232,197,71,0.08) 0%, transparent 60%), radial-gradient(ellipse 40% 60% at 70% 60%, rgba(78,100,200,0.06) 0%, transparent 60%); animation: breathe 8s ease-in-out infinite; }
+    @keyframes breathe { 0%, 100% { opacity: 0.6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.05); } }
+
+    .idle-content { position: relative; text-align: center; }
+    .idle-logo { font-size: 120px; margin-bottom: 24px; animation: float 4s ease-in-out infinite; }
+    @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+    .idle-title { font-size: 28px; font-weight: 300; letter-spacing: 8px; text-transform: uppercase; color: rgba(240,239,245,0.7); margin-bottom: 12px; }
+    .idle-sub { font-size: 14px; letter-spacing: 3px; text-transform: uppercase; color: rgba(240,239,245,0.25); }
+
+    .ws-status { position: fixed; bottom: 32px; right: 32px; display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: rgba(255,255,255,0.2); }
+    .ws-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.2); transition: all 0.5s; }
+    .ws-status.connected .ws-dot { background: #4ecd94; box-shadow: 0 0 6px #4ecd94; }
+
+    .osd { position: fixed; top: 0; left: 0; right: 0; padding: 24px 40px; background: linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, transparent 100%); display: flex; align-items: center; gap: 16px; opacity: 0; transition: opacity 0.5s; pointer-events: none; }
+    .osd.show { opacity: 1; }
+    .osd-text { font-size: 15px; color: rgba(255,255,255,0.8); }
+    .osd-title { color: #e8c547; font-weight: 600; }
+
+    .pause-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+    .pause-overlay.show { opacity: 1; }
+    .pause-icon { font-size: 80px; filter: drop-shadow(0 0 30px rgba(0,0,0,0.8)); }
+
+    .clock { position: fixed; bottom: 32px; left: 32px; font-size: 13px; letter-spacing: 2px; color: rgba(255,255,255,0.15); }
+  </style>
+</head>
+<body>
+  <div class="idle" id="idle">
+    <div class="idle-bg"></div>
+    <div class="idle-content">
+      <div class="idle-logo">📺</div>
+      <div class="idle-title">Aguardando conteúdo</div>
+      <div class="idle-sub">Selecione um vídeo no painel admin</div>
+    </div>
+  </div>
+
+  <div id="player">
+    <video id="video" autoplay loop playsinline></video>
+  </div>
+
+  <div class="pause-overlay" id="pauseOverlay">
+    <div class="pause-icon">⏸</div>
+  </div>
+
+  <div class="osd" id="osd">
+    <span class="osd-text">Reproduzindo: <span class="osd-title" id="osdTitle"></span></span>
+  </div>
+
+  <div class="ws-status" id="wsStatus">
+    <div class="ws-dot"></div>
+    <span id="wsStatusText">conectando</span>
+  </div>
+
+  <div class="clock" id="clock"></div>
+
+  <script>
+    const video = document.getElementById('video');
+    const idle = document.getElementById('idle');
+    const osd = document.getElementById('osd');
+    const pauseOverlay = document.getElementById('pauseOverlay');
+    let osdTimer, ws;
+
+    setInterval(() => {
+      document.getElementById('clock').textContent = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    }, 1000);
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+      ws.onopen = () => {
+        document.getElementById('wsStatus').classList.add('connected');
+        document.getElementById('wsStatusText').textContent = 'conectado';
+        // Identifica esta conexão como TV para o servidor
+        ws.send(JSON.stringify({ type: 'identify', role: 'tv' }));
+        setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'ping' })), 30000);
+      };
+      ws.onclose = () => {
+        document.getElementById('wsStatus').classList.remove('connected');
+        document.getElementById('wsStatusText').textContent = 'reconectando';
+        setTimeout(connect, 3000);
+      };
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'state') {
+          const s = msg.state;
+          if (s.video_url) { loadVideo(s.video_url, s.video_name, s.volume); if (!s.playing) video.pause(); }
+        } else if (msg.type === 'play') { loadVideo(msg.video_url, msg.video_name); }
+        else if (msg.type === 'stop') { stopVideo(); }
+        else if (msg.type === 'pause') { video.pause(); pauseOverlay.classList.add('show'); }
+        else if (msg.type === 'resume') { video.play(); pauseOverlay.classList.remove('show'); }
+        else if (msg.type === 'volume') { video.volume = msg.volume; }
+      };
+    }
+
+    function loadVideo(url, name, volume = 1) {
+      video.src = url; video.volume = volume;
+      video.style.display = 'block';
+      video.play().catch(() => { video.muted = true; video.play(); });
+      idle.classList.add('hidden');
+      pauseOverlay.classList.remove('show');
+      document.getElementById('osdTitle').textContent = name || '';
+      osd.classList.add('show');
+      clearTimeout(osdTimer);
+      osdTimer = setTimeout(() => osd.classList.remove('show'), 4000);
+    }
+
+    function stopVideo() {
+      video.pause(); video.src = ''; video.style.display = 'none';
+      idle.classList.remove('hidden'); pauseOverlay.classList.remove('show'); osd.classList.remove('show');
+    }
+
+    connect();
+  </script>
+</body>
+</html>
